@@ -125,9 +125,9 @@ class SimpleSelfPlayEnv:
 
     N_PLAYERS = 3
     # Average number of decisions per game before a terminal signal is issued.
-    _STEPS_PER_GAME = 40
+    DEFAULT_STEPS_PER_GAME = 40
 
-    def __init__(self, steps_per_game: int = _STEPS_PER_GAME):
+    def __init__(self, steps_per_game: int = DEFAULT_STEPS_PER_GAME):
         self._steps_per_game = steps_per_game
         self._step_count = 0
 
@@ -323,7 +323,7 @@ class SelfPlayCollector:
                     "meta": {
                         "game_id": game_id,
                         "player_id": seat,
-                        "round": "?",
+                        "round": "unknown",
                         "step": t,
                         "is_3p": True,
                         "source": "selfplay",

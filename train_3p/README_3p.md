@@ -430,7 +430,7 @@ directly in a browser-based cloud environment.
 |------|-----|-----|-----|----------|
 | Free (2-core) | 2 vCPU | 8 GB | ❌ | Smoke test, 1–2 epochs, tiny model |
 | 4-core (paid) | 4 vCPU | 16 GB | ❌ | Short supervised runs, small model |
-| GPU (paid/beta) | 4 vCPU | 16 GB | T4 16 GB | Full training |
+| GPU (paid) | 4 vCPU | 16 GB | T4 16 GB | Full training |
 
 **Verdict**: Codespaces is great for testing the pipeline and short
 supervised runs. For meaningful RL training (50+ iterations, 192-channel
