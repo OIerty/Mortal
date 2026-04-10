@@ -348,8 +348,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     # Model
     parser.add_argument("--model-version", type=int, default=4,
-                        choices=[1, 2, 3, 4],
-                        help="Model version (4 recommended)")
+                        choices=[2, 3, 4],
+                        help="Model version (4 recommended; version 1 is unsupported)")
     parser.add_argument("--conv-channels", type=int, default=64,
                         help="ResNet conv channels (64=fast, 192=production)")
     parser.add_argument("--num-blocks", type=int, default=6,

@@ -87,13 +87,14 @@ def _count_lines(path: Path) -> int:
 
 
 def _tail_jsonl(src: Path, dst: Path, keep_lines: int):
-    """Write the last *keep_lines* lines of src into dst."""
+    """Write the last *keep_lines* lines of src into dst (streaming, O(keep_lines) memory)."""
     if not src.exists():
         return
+    from collections import deque
     with src.open("r", encoding="utf-8") as f:
-        lines = f.readlines()
+        tail: deque[str] = deque(f, maxlen=keep_lines)
     with dst.open("w", encoding="utf-8") as f:
-        f.writelines(lines[-keep_lines:])
+        f.writelines(tail)
 
 
 def _merge_jsonl(files: list[Path], dst: Path, keep_last: int | None = None):

@@ -51,7 +51,7 @@ class MahjongDataset3P(Dataset):
         smoke tests).
     augment : bool
         If True, apply tile-suit rotation augmentation (man↔pin swapping) to
-        triple the effective dataset size. Default False.
+        double the effective dataset size. Default False.
     """
 
     def __init__(

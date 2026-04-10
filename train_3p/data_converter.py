@@ -88,6 +88,9 @@ OBS_CHANNELS_3P = 54
 # Number of distinct actions in the 3P action space
 ACTION_SPACE_3P = 79
 
+# Default starting score for 3P mahjong (most rule sets use 35000)
+INITIAL_SCORE_3P = 35000.0
+
 # Human-readable name for each action index
 ACTION_NAMES: list[str] = (
     [f"dahai_{i}" for i in range(34)]        # 0-33
@@ -347,7 +350,7 @@ class GameState3P:
         self.dora_indicators: list[int] = []
         self.remaining: int = 70
         self.riichi: list[bool] = [False] * self.N_PLAYERS
-        self.scores: list[float] = [35000.0] * self.N_PLAYERS
+        self.scores: list[float] = [INITIAL_SCORE_3P] * self.N_PLAYERS
         self.round_wind: int = 0
         self.seat_wind: int = 0
         self.kyoku: int = 0
@@ -372,7 +375,7 @@ class GameState3P:
             oya = event.get("oya", 0)
             # Rotate so seat_wind is relative to self
             self.seat_wind = (self.player_id - oya) % self.N_PLAYERS
-            self.scores = [float(s) for s in event.get("scores", [35000] * 4)[:3]]
+            self.scores = [float(s) for s in event.get("scores", [INITIAL_SCORE_3P] * 4)[:3]]
             tehais = event.get("tehais", [[] for _ in range(self.N_PLAYERS)])
             self.hand = [tile_to_id(t) for t in tehais[self.player_id]
                          if tile_to_id(t) >= 0]
@@ -529,12 +532,16 @@ def _event_to_action_index(event: dict, player_id: int) -> int | None:
 def _load_events(path: Path) -> list[dict]:
     """Load a MJAI log file as a flat list of event dicts."""
     text = path.read_text(encoding="utf-8")
-    data = json.loads(text)
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict) and "log" in data:
-        # Some formats wrap events in a "log" key
-        return data["log"]
+    # Try whole-file JSON first (list or {"log": [...]} wrapper)
+    try:
+        data = json.loads(text)
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict) and "log" in data:
+            return data["log"]
+        # Unknown single-object format – fall through to JSONL
+    except json.JSONDecodeError:
+        pass
     # Newline-delimited JSON (jsonl)
     events = []
     for line in text.splitlines():
@@ -542,6 +549,34 @@ def _load_events(path: Path) -> list[dict]:
         if line:
             events.append(json.loads(line))
     return events
+
+
+def _hand_tile_ids(
+    state: "GameState3P",
+    discarded_tid: int,
+) -> list[int]:
+    """
+    Return the tile-ids that were in hand just before this dahai event.
+
+    ``state.hand`` has already been updated (tile removed by apply_event), so
+    we reconstruct the pre-action hand by adding the discarded tile back.
+    """
+    hand = list(state.hand) + [discarded_tid]
+    return sorted(set(t for t in hand if t >= 0))
+
+
+def _call_event_mask(event_type: str, action_idx: int) -> "np.ndarray":
+    """
+    Build a legal-actions mask for a call / special event.
+
+    For all call-type events the player's only choices were to make the call
+    *or* pass (none / 77).  We mark both as legal so the network sees a
+    meaningful contrast.
+    """
+    mask = np.zeros(ACTION_SPACE_3P, dtype=bool)
+    mask[action_idx] = True
+    mask[77] = True  # 'none' (pass) is always an alternative
+    return mask
 
 
 def convert_mjai_log(
@@ -565,17 +600,26 @@ def convert_mjai_log(
         # Only process 3P games
         return
 
-    # Final scores (for reward computation)
-    final_scores: list[float] = [0.0, 0.0, 0.0]
-    for evt in reversed(events):
-        if evt.get("type") == "end_game":
-            final_scores = [float(s) for s in evt.get("scores", [0, 0, 0])[:3]]
+    # Final scores (for reward computation).
+    # Primary source: end_game event with a "scores" field.
+    # Fallback: last observed scores from the final agari/ryukyoku/end_kyoku event.
+    final_scores: list[float] | None = None
+    last_seen_scores: list[float] = [INITIAL_SCORE_3P] * 3
+    for evt in events:
+        t_e = evt.get("type", "")
+        if t_e in ("agari", "ryukyoku", "end_kyoku") and "scores" in evt:
+            last_seen_scores = [float(s) for s in evt["scores"][:3]]
+        elif t_e == "end_game":
+            if "scores" in evt:
+                final_scores = [float(s) for s in evt["scores"][:3]]
             break
+    if final_scores is None:
+        final_scores = last_seen_scores
 
-    initial_scores: list[float] = [35000.0, 35000.0, 35000.0]
+    initial_scores: list[float] = [INITIAL_SCORE_3P] * 3
     for evt in events:
         if evt.get("type") == "start_kyoku":
-            initial_scores = [float(s) for s in evt.get("scores", [35000] * 3)[:3]]
+            initial_scores = [float(s) for s in evt.get("scores", [INITIAL_SCORE_3P] * 3)[:3]]
             break
 
     riichi_pending: list[bool] = [False, False, False]
@@ -589,7 +633,12 @@ def convert_mjai_log(
             t = evt.get("type", "")
             actor = evt.get("actor", -1)
 
-            # Apply state update BEFORE extracting the action
+            # Capture pre-action observation BEFORE modifying state.
+            # This ensures the (state → action) pair is correctly aligned:
+            # the observation reflects what the player saw when they acted.
+            pre_obs = state.encode()
+
+            # Apply state update
             state.apply_event(evt)
             step_global += 1
 
@@ -604,10 +653,20 @@ def convert_mjai_log(
                 if tid < 0:
                     riichi_pending_local.pop(actor, None)
                     continue
-                if riichi_pending_local.pop(actor, False):
+                is_riichi = riichi_pending_local.pop(actor, False)
+                if is_riichi:
                     action_idx = ACTION_MAPPING.get(("riichi", tid))
+                    # Legal mask: riichi-discard for every tile in the pre-action hand
+                    hand_ids = _hand_tile_ids(state, tid)
+                    mask = make_legal_actions_mask(
+                        can_discard=[],
+                        can_riichi=hand_ids,
+                    )
                 else:
                     action_idx = ACTION_MAPPING.get(("dahai", tid))
+                    # Legal mask: any tile that was in hand can be discarded
+                    hand_ids = _hand_tile_ids(state, tid)
+                    mask = make_legal_actions_mask(can_discard=hand_ids)
 
             elif t in ("pon", "chi", "daiminkan", "kakan", "ankan",
                        "agari", "ryukyoku", "nukidora", "none"):
@@ -618,28 +677,20 @@ def convert_mjai_log(
                         winners = [winners]
                     if player_id in winners:
                         action_idx = ACTION_MAPPING[("agari", None)]
+                        # Both agari and none (pass) are available
+                        mask = make_legal_actions_mask(can_agari=True)
                 elif actor == player_id:
                     action_idx = _event_to_action_index(evt, player_id)
+                    if action_idx is not None:
+                        mask = _call_event_mask(t, action_idx)
 
             if action_idx is None:
                 continue
 
-            # Build legal actions mask (heuristic based on event type)
-            # In a full implementation this would use game-rule logic; here we
-            # set the taken action as legal plus common fallbacks.
-            mask = np.zeros(ACTION_SPACE_3P, dtype=bool)
-            mask[action_idx] = True
-            mask[77] = True  # 'none' is always available as fallback
-
-            # Encode state (state was already updated by apply_event above,
-            # so re-encode with the *previous* state – we undo the last event's
-            # effect by using the pre-action snapshot).
-            obs = state.encode().flatten()
-
             reward = float(final_scores[player_id] - initial_scores[player_id])
 
             yield {
-                "state": obs.tolist(),
+                "state": pre_obs.flatten().tolist(),
                 "legal_actions_mask": mask.tolist(),
                 "action": int(action_idx),
                 "reward": reward,
@@ -693,17 +744,22 @@ def convert_majsoul_log(
     if not mjai_events:
         return
 
-    # Write to a temporary in-memory "file" and use the MJAI converter
-    import io
-    buf = io.StringIO()
-    json.dump(mjai_events, buf)
-    buf.seek(0)
+    # Serialise the normalised event list to a cross-platform temporary file
+    # and delegate to convert_mjai_log.
+    import tempfile
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".json",
+        encoding="utf-8",
+        delete=False,
+    ) as tmp_f:
+        json.dump(mjai_events, tmp_f)
+        tmp_path = Path(tmp_f.name)
 
-    # Patch convert_mjai_log to accept a string buffer
-    tmp = Path(f"/tmp/_majsoul_tmp_{path.stem}.json")
-    tmp.write_text(buf.getvalue(), encoding="utf-8")
-    yield from convert_mjai_log(tmp, game_id=game_id or path.stem)
-    tmp.unlink(missing_ok=True)
+    try:
+        yield from convert_mjai_log(tmp_path, game_id=game_id or path.stem)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def _majsoul_action_to_mjai(action: dict) -> list[dict] | dict | None:

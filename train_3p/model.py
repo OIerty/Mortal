@@ -280,8 +280,12 @@ class DQN(nn.Module):
 
         match version:
             case 1:
-                self.v_head = nn.Linear(512, 1)
-                self.a_head = nn.Linear(512, ACTION_SPACE_3P)
+                # v1 heads accept 1024-dim input (matching Brain v2/3/4 output).
+                # Note: Brain v1 returns a (mu, logsig) tuple and cannot be used
+                # with this DQN head; v1 is preserved only for checkpoint
+                # compatibility when loading legacy weights.
+                self.v_head = nn.Linear(1024, 1)
+                self.a_head = nn.Linear(1024, ACTION_SPACE_3P)
             case 2 | 3:
                 hidden = 512 if version == 2 else 256
                 self.v_head = nn.Sequential(
