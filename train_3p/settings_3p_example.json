@@ -1,0 +1,30 @@
+{
+  "_comment": "Example Akagi settings.json for three-player mahjong (3P / 三麻).",
+  "_instructions": [
+    "1. Train (or obtain) a 3P model: python train.py --data sample.jsonl --epochs 1",
+    "2. Copy the produced mortal_3p.pth to  ./Akagi/mjai_bot/mortal3p/mortal.pth",
+    "3. Edit ./Akagi/settings/settings.json and set 'model' to 'mortal3p'",
+    "4. Start Akagi normally; it will automatically select the 3P model for sanma rooms"
+  ],
+  "mitm": {
+    "type": "majsoul",
+    "host": "127.0.0.1",
+    "port": 7880
+  },
+  "model": "mortal3p",
+  "theme": "textual-dark",
+  "ot_server": {
+    "server": "http://127.0.0.1:5000",
+    "online": false,
+    "api_key": "your_api_key"
+  },
+  "autoplay": false,
+  "auto_switch_model": true,
+  "autoplay_time": {
+    "first_tile": 5.0,
+    "rand_min": 1.0,
+    "rand_max": 3.0,
+    "candidate": 0.5
+  },
+  "recommendation_temperature": 0.3
+}

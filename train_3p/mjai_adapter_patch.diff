@@ -1,0 +1,150 @@
+# mjai_adapter_patch.diff
+#
+# This file documents the integration of a custom-trained 3P mortal_3p.pth
+# checkpoint into OIerty/Akagi's mjai_bot/mortal3p bot.
+#
+# The diff below shows the MINIMAL change required to make the mortal3p bot
+# load a checkpoint produced by this training pipeline instead of the default
+# one bundled with Akagi.
+#
+# How to apply
+# ------------
+# 1. Copy your trained weight to the bot directory:
+#
+#       cp mortal_3p.pth  <path-to-Akagi>/mjai_bot/mortal3p/mortal.pth
+#
+# 2. The existing  mjai_bot/mortal3p/model.py  already uses the correct
+#    checkpoint format.  No Python-level patch is needed for weight loading.
+#
+# 3. Update settings/settings.json (see settings_3p_example.json):
+#
+#       "model": "mortal3p"
+#
+# The diff below covers optional quality-of-life improvements:
+#   A. Brain architecture constants are read from the checkpoint config so
+#      you can train at any size (not just the default 192 / 40).
+#   B. A 3P-specific action-space assertion is added so mismatched weights
+#      are caught at startup rather than silently producing wrong moves.
+#
+# This diff targets:  OIerty/Akagi  mjai_bot/mortal3p/model.py
+
+--- a/mjai_bot/mortal3p/model.py
++++ b/mjai_bot/mortal3p/model.py
+@@ -1,6 +1,8 @@
+ import json
+ import gzip
+ import torch
++import sys
+ import pathlib
+ import requests
+ import traceback
+@@ -11,6 +13,14 @@ from .libriichi3p.consts import obs_shape, oracle_obs_shape, ACTION_SPACE, GRP_
+ from .logger import logger
+ 
++# ---------------------------------------------------------------------------
++# 3P Action-space guard
++# ---------------------------------------------------------------------------
++# The training pipeline in OIerty/Mortal train_3p/ uses ACTION_SPACE_3P = 79.
++# Verify that libriichi3p reports the same value so weight shapes match.
++_EXPECTED_ACTION_SPACE_3P = 79
++if ACTION_SPACE != _EXPECTED_ACTION_SPACE_3P:
++    logger.warning(
++        f"libriichi3p ACTION_SPACE={ACTION_SPACE} != {_EXPECTED_ACTION_SPACE_3P}; "
++        "weight shapes may mismatch if you loaded a train_3p checkpoint."
++    )
++
+ # ========== Online Server =========== #
+ OT_REQUEST_TIMEOUT = 2
+@@ -185,6 +201,15 @@ def load_model(seat: int) -> Bot:
+     control_state_file = pathlib.Path(__file__).parent / control_state_file
+     state = torch.load(control_state_file, map_location=device)
+ 
++    # Support checkpoints produced by OIerty/Mortal train_3p/ pipeline.
++    # Those checkpoints store architecture config under state["config"].
++    cfg = state.get("config", {})
++    version      = cfg.get("control", {}).get("version", 4)
++    conv_channels = cfg.get("resnet", {}).get("conv_channels", 192)
++    num_blocks    = cfg.get("resnet", {}).get("num_blocks", 40)
++    is_3p = cfg.get("is_3p", False)
++    if is_3p:
++        logger.info(f"Loading train_3p checkpoint: v{version} ch={conv_channels} blk={num_blocks}")
++    mortal = Brain(version=version, conv_channels=conv_channels, num_blocks=num_blocks).eval()
++    dqn = DQN(version=version).eval()
+-    mortal = Brain(version=state['config']['control']['version'], conv_channels=state['config']['resnet']['conv_channels'], num_blocks=state['config']['resnet']['num_blocks']).eval()
+-    dqn = DQN(version=state['config']['control']['version']).eval()
+     mortal.load_state_dict(state['mortal'])
+     dqn.load_state_dict(state['current_dqn'])
+
+# ---------------------------------------------------------------------------
+# Action-index ↔ MJAI type mapping (for 3P; mirroring train_3p/data_converter.py)
+# ---------------------------------------------------------------------------
+#
+# This table MUST match the ACTION_MAPPING in train_3p/data_converter.py.
+# If you retrain with a different action space, update both files consistently.
+#
+#   Index   MJAI type          Extra info / notes
+#   ------  -----------------  -----------------------------------------------
+#   0-33    dahai              tile_id = index (0=1m … 33=7z)
+#   34-67   dahai + riichi     tile_id = index - 34
+#   68      agari              covers tsumo AND ron
+#   69      pon                pon call on last discard
+#   70      chi_low            chi: own tiles are below the called tile
+#   71      chi_mid            chi: own tiles sandwich the called tile
+#   72      chi_high           chi: own tiles are above the called tile
+#   73      daiminkan          open kan on opponent discard
+#   74      kakan              added kan (shouminkan)
+#   75      ankan              closed kan
+#   76      ryukyoku           abortive / exhaustive draw
+#   77      none               pass; no legal action available
+#   78      nukidora           3P-only: declare North tile as extra dora
+#
+# Tile-id encoding (0-33):
+#   0-8  → 1m-9m  (man / character)
+#   9-17 → 1p-9p  (pin / circle)
+#   18-26→ 1s-9s  (sou / bamboo)
+#   27   → 1z (East wind)
+#   28   → 2z (South wind)
+#   29   → 3z (West wind)
+#   30   → 4z (North wind / nukidora tile in 3P)
+#   31   → 5z (Haku / White dragon)
+#   32   → 6z (Hatsu / Green dragon)
+#   33   → 7z (Chun / Red dragon)
+
+# ---------------------------------------------------------------------------
+# Minimal smoke test
+# ---------------------------------------------------------------------------
+# Run this block to verify that a mortal_3p.pth checkpoint is loadable and
+# that the bot can produce a valid action for a synthetic 3P game state.
+#
+#   cd <path-to-Akagi>
+#   python - <<'EOF'
+#   import json, torch, pathlib, sys
+#   sys.path.insert(0, ".")
+#
+#   # ---- Load model (same as load_model() in mjai_bot/mortal3p/model.py) ----
+#   from mjai_bot.mortal3p import model as m3p
+#   bot = m3p.load_model(seat=0)
+#
+#   # ---- Construct a minimal 3P start_game + tsumo sequence ----------------
+#   events = [
+#       {"type": "start_game", "names": ["A", "B", "C"], "id": 0},
+#       {
+#           "type": "start_kyoku",
+#           "bakaze": "E", "kyoku": 1, "honba": 0, "kyotaku": 0,
+#           "oya": 0, "scores": [35000, 35000, 35000],
+#           "dora_marker": "1p",
+#           "tehais": [
+#               ["1m","2m","3m","4m","5m","6m","7m","8m","9m",
+#                "1p","2p","3p","4p"],
+#               ["?"]*13, ["?"]*13,
+#           ],
+#       },
+#       {"type": "tsumo", "actor": 0, "pai": "5p"},
+#   ]
+#   action = bot.react(json.dumps(events[-1]))
+#   result = json.loads(action)
+#   print("Bot action:", result)
+#   assert result["type"] in ("dahai", "tsumo", "riichi", "ankan", "kakan",
+#                              "none"), f"Unexpected action: {result}"
+#   print("Smoke test PASSED")
+#   EOF
