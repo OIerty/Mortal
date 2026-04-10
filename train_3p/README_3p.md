@@ -306,7 +306,186 @@ See `mjai_adapter_patch.diff` for:
 
 ---
 
-## Step 6: Run Tests
+## Step 6: Self-Play Reinforcement Learning
+
+Once you have a supervised baseline model, you can improve it further through
+self-play RL using the iterative pipeline.
+
+### How it works
+
+```
+Bootstrap (once)
+  └─ generate_sample.py  →  seed.jsonl  →  train.py  →  bootstrap.pth
+
+RL Loop (N iterations)
+  └─ selfplay.py  →  new examples  →  merge into replay buffer
+  └─ train.py     →  fine-tune on replay buffer  →  checkpoint_iter_N.pth
+  └─ eval.py      →  offline metrics per iteration
+```
+
+### Quick start (CPU smoke test)
+
+```bash
+cd train_3p
+python run_pipeline.py --iterations 3 --games-per-iter 20 --epochs-per-iter 1
+```
+
+This bootstraps a tiny model, runs 3 iterations of self-play + training, and
+writes all outputs to `pipeline_out/`.
+
+### Production run (GPU recommended)
+
+```bash
+python run_pipeline.py \
+    --iterations 50 \
+    --games-per-iter 500 \
+    --epochs-per-iter 5 \
+    --batch-size 512 \
+    --conv-channels 192 \
+    --num-blocks 40 \
+    --device cuda \
+    --out-dir pipeline_out
+```
+
+### Resume a paused pipeline
+
+```bash
+python run_pipeline.py \
+    --resume pipeline_out/iter_0010/checkpoint.pth \
+    --start-iter 11 \
+    --iterations 50 \
+    --out-dir pipeline_out
+```
+
+### Self-play standalone
+
+Generate self-play data independently (useful for data collection on a
+separate machine):
+
+```bash
+# All seats use the model (ε=0.05 greedy)
+python selfplay.py --checkpoint mortal_3p.pth --games 200 --out sp200.jsonl
+
+# Seat 2 plays randomly (more exploration diversity)
+python selfplay.py --checkpoint mortal_3p.pth --games 200 --random-seats 2 --out sp200.jsonl
+
+# Softmax temperature sampling (more varied actions)
+python selfplay.py --checkpoint mortal_3p.pth --games 200 --temperature 0.5 --out sp200.jsonl
+```
+
+### Plug in a real mahjong engine
+
+The built-in engine generates random states and random outcomes – enough to
+test the pipeline, but the model won't learn real mahjong strategy from it.
+
+To use a real engine, implement the two-method interface in `selfplay.py`:
+
+```python
+class MahjongEngine:
+    def reset(self):
+        # Start a new game; return (states, masks) for each of 3 seats
+        ...
+
+    def step(self, actions):
+        # Apply actions; return (next_states, next_masks, rewards, done)
+        ...
+```
+
+Then pass it to the scripts:
+
+```bash
+python selfplay.py \
+    --checkpoint mortal_3p.pth \
+    --engine-module mypackage.myengine.MahjongEngine \
+    --games 500 --out sp500.jsonl
+
+python run_pipeline.py \
+    --engine-module mypackage.myengine.MahjongEngine \
+    --iterations 50 ...
+```
+
+### Key pipeline parameters
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--iterations` | 10 | Number of RL iterations |
+| `--games-per-iter` | 100 | Self-play games per iteration |
+| `--epochs-per-iter` | 3 | Fine-tuning epochs per iteration |
+| `--replay-games` | 500 | Rolling replay buffer size (in games) |
+| `--epsilon` | 0.05 | ε-greedy exploration rate |
+| `--temperature` | 0.0 | Softmax temperature (0 = argmax) |
+| `--cql-weight` | 1.0 | Conservative Q-Learning penalty |
+| `--bootstrap-epochs` | 3 | Epochs for the initial supervised boot |
+
+---
+
+## Step 7: Train on GitHub Codespaces (Cloud)
+
+The repository includes a `.devcontainer/devcontainer.json` so you can train
+directly in a browser-based cloud environment.
+
+### What Codespaces can do
+
+| Tier | CPU | RAM | GPU | Use case |
+|------|-----|-----|-----|----------|
+| Free (2-core) | 2 vCPU | 8 GB | ❌ | Smoke test, 1–2 epochs, tiny model |
+| 4-core (paid) | 4 vCPU | 16 GB | ❌ | Short supervised runs, small model |
+| GPU (paid/beta) | 4 vCPU | 16 GB | T4 16 GB | Full training |
+
+**Verdict**: Codespaces is great for testing the pipeline and short
+supervised runs. For meaningful RL training (50+ iterations, 192-channel
+model), you need a GPU – either a paid Codespaces machine type with GPU, or
+a separate cloud VM (Colab, Vast.ai, RunPod, etc.).
+
+### Launch Codespaces
+
+1. Go to the repository on GitHub.
+2. Click **Code → Codespaces → Create codespace on this branch**.
+3. Wait ~2 minutes for the environment to build (Python 3.11 + dependencies
+   are installed automatically via `postCreateCommand`).
+
+### Run training in Codespaces
+
+```bash
+# In the Codespaces terminal:
+cd train_3p
+
+# Smoke test (CPU, ~30 seconds)
+python run_pipeline.py --iterations 2 --games-per-iter 20 --epochs-per-iter 1
+
+# Supervised baseline on your own data
+python train.py --data /path/to/train.jsonl --epochs 5 --device cpu
+```
+
+### TensorBoard in Codespaces
+
+TensorBoard port (6006) is forwarded automatically.  After training starts:
+
+1. Click the **Ports** tab in VS Code (bottom panel).
+2. Click the 🌐 icon next to port 6006.
+
+### Upload real game data to Codespaces
+
+```bash
+# Option A: drag-and-drop in VS Code's Explorer panel
+
+# Option B: use GitHub CLI
+gh codespace cp ./mylogs/*.json remote:/workspaces/Mortal/train_3p/
+
+# Option C: wget / curl from a URL
+wget -P train_3p/ https://example.com/mahjong_data.jsonl
+```
+
+### Download the trained checkpoint
+
+```bash
+# From your local machine:
+gh codespace cp remote:/workspaces/Mortal/train_3p/mortal_3p.pth ./mortal_3p.pth
+```
+
+---
+
+## Step 8: Run Tests
 
 ```bash
 # From the train_3p/ directory
