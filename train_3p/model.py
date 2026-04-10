@@ -340,8 +340,8 @@ def build_model(
 
     mortal = Brain(version=version, conv_channels=conv_channels, num_blocks=num_blocks)
     dqn = DQN(version=version)
-    mortal.to(device)
-    dqn.to(device)
+    mortal.to(device).eval()
+    dqn.to(device).eval()
     return mortal, dqn
 
 

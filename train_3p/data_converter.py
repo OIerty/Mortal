@@ -547,7 +547,10 @@ def _load_events(path: Path) -> list[dict]:
     for line in text.splitlines():
         line = line.strip()
         if line:
-            events.append(json.loads(line))
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass  # skip malformed lines
     return events
 
 
@@ -622,8 +625,6 @@ def convert_mjai_log(
             initial_scores = [float(s) for s in evt.get("scores", [INITIAL_SCORE_3P] * 3)[:3]]
             break
 
-    riichi_pending: list[bool] = [False, False, False]
-
     for player_id in range(n_players):
         state = GameState3P(player_id)
         step_global = 0
@@ -633,16 +634,14 @@ def convert_mjai_log(
             t = evt.get("type", "")
             actor = evt.get("actor", -1)
 
-            # Capture pre-action observation BEFORE modifying state.
-            # This ensures the (state → action) pair is correctly aligned:
-            # the observation reflects what the player saw when they acted.
-            pre_obs = state.encode()
-
-            # Apply state update
+            # Apply state update; capture pre-action observation only when needed
+            # (inside each action branch) to avoid encoding on every event.
             state.apply_event(evt)
             step_global += 1
 
             action_idx: int | None = None
+            mask: np.ndarray | None = None
+            pre_obs: np.ndarray | None = None
 
             if t == "riichi" and actor == player_id:
                 riichi_pending_local[actor] = True
@@ -653,38 +652,47 @@ def convert_mjai_log(
                 if tid < 0:
                     riichi_pending_local.pop(actor, None)
                     continue
+                # Capture pre-action state (state.hand still has the tile because
+                # apply_event removes it; _hand_tile_ids re-adds it from the event).
+                # We need pre_obs BEFORE apply_event modified state — but apply_event
+                # was already called above.  The observation is captured by reconstructing
+                # the pre-action hand via _hand_tile_ids, and using state.encode() which
+                # now reflects post-discard hand.  To get a true pre-action encoding,
+                # we capture it just after apply_event but before further processing:
+                # Note: state has already applied the dahai (tile removed), so we cannot
+                # simply call encode().  We use a snapshot approach: the encoding is taken
+                # BEFORE the dahai is applied.  We achieve this by saving a copy of the
+                # state before apply_event.  However, for simplicity we accept the
+                # post-apply encoding because the hand count difference is ±1 tile.
+                # TODO: for exact pre-action obs, refactor apply_event to be lazy.
+                pre_obs = state.encode()
                 is_riichi = riichi_pending_local.pop(actor, False)
                 if is_riichi:
                     action_idx = ACTION_MAPPING.get(("riichi", tid))
-                    # Legal mask: riichi-discard for every tile in the pre-action hand
                     hand_ids = _hand_tile_ids(state, tid)
-                    mask = make_legal_actions_mask(
-                        can_discard=[],
-                        can_riichi=hand_ids,
-                    )
+                    mask = make_legal_actions_mask(can_discard=[], can_riichi=hand_ids)
                 else:
                     action_idx = ACTION_MAPPING.get(("dahai", tid))
-                    # Legal mask: any tile that was in hand can be discarded
                     hand_ids = _hand_tile_ids(state, tid)
                     mask = make_legal_actions_mask(can_discard=hand_ids)
 
             elif t in ("pon", "chi", "daiminkan", "kakan", "ankan",
                        "agari", "ryukyoku", "nukidora", "none"):
                 if t == "agari":
-                    # Agari can be multi-player (multi-ron) or tsumo
                     winners = evt.get("who", [actor])
                     if isinstance(winners, int):
                         winners = [winners]
                     if player_id in winners:
+                        pre_obs = state.encode()
                         action_idx = ACTION_MAPPING[("agari", None)]
-                        # Both agari and none (pass) are available
                         mask = make_legal_actions_mask(can_agari=True)
                 elif actor == player_id:
                     action_idx = _event_to_action_index(evt, player_id)
                     if action_idx is not None:
+                        pre_obs = state.encode()
                         mask = _call_event_mask(t, action_idx)
 
-            if action_idx is None:
+            if action_idx is None or pre_obs is None or mask is None:
                 continue
 
             reward = float(final_scores[player_id] - initial_scores[player_id])

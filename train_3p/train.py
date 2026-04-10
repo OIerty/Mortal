@@ -42,12 +42,10 @@ from __future__ import annotations
 import argparse
 import logging
 import math
-import os
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import torch
 from torch import nn, optim
@@ -56,8 +54,7 @@ from torch.utils.data import random_split
 # Allow running from train_3p/ directory or from repo root
 sys.path.insert(0, str(Path(__file__).parent))
 
-from data_converter import ACTION_SPACE_3P, OBS_CHANNELS_3P
-from dataset import MahjongDataset3P, build_dataloader
+from dataset import MahjongDataset3P
 from model import Brain, DQN, build_model, save_checkpoint, load_checkpoint, parameter_count
 
 logging.basicConfig(

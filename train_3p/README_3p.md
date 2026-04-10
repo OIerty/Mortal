@@ -52,7 +52,7 @@ train_3p/
 ### Option A – From MJAI JSON Logs
 
 MJAI logs are JSON files (or JSONL) containing a list of game events.
-Sources: [smly/mjai.app](https://github.com/OIerty/mjai.app),
+Sources: [smly/mjai.app](https://github.com/smly/mjai.app),
 hand-collected self-play logs, or any MJAI-compatible tool.
 
 ```bash
@@ -241,7 +241,37 @@ python eval.py --checkpoint mortal_3p.pth --data val.jsonl --out-json results.js
 
 ---
 
-## Step 5: Export and Integrate with Akagi
+## Step 5: Export and Integrate with Akagi (shinkuan/Akagi v2)
+
+The checkpoint produced by `train.py` (`mortal_3p.pth`) is **drop-in compatible**
+with the `mjai_bot/mortal3p` bot in
+[shinkuan/Akagi v2](https://github.com/shinkuan/Akagi/tree/v2/mjai_bot/mortal3p).
+Just replace the pre-trained `mortal.pth` file with your own — no code changes
+required.  The loader in `mjai_bot/mortal3p/model.py` reads the architecture
+parameters (`version`, `conv_channels`, `num_blocks`) directly from the
+checkpoint's `config` dict, so any model size works.
+
+### Checkpoint Format
+
+The saved checkpoint (`mortal_3p.pth`) contains:
+
+```python
+{
+    "mortal":       mortal.state_dict(),   # Brain (ResNet encoder) weights
+    "current_dqn":  dqn.state_dict(),      # DQN (policy/value head) weights
+    "steps":        int,                   # training step count
+    "timestamp":    float,                 # Unix timestamp of save
+    "config": {
+        "control": {"version": int},       # model version (2/3/4)
+        "resnet":  {"conv_channels": int,
+                    "num_blocks":    int},
+        "is_3p":   True,
+    },
+}
+```
+
+This matches exactly what `shinkuan/Akagi v2 mjai_bot/mortal3p/model.py`
+expects when calling `torch.load("mortal.pth", ...)`.
 
 ### Weight File Placement
 
@@ -263,6 +293,11 @@ copy mortal_3p.pth  C:\path\to\Akagi\mjai_bot\mortal3p\mortal.pth
 cp mortal_3p.pth  /path/to/Akagi/mjai_bot/mortal3p/mortal.pth
 ```
 
+> **Tip**: The default model trained by `generate_sample.py + train.py` is very
+> small (64 channels × 6 blocks, ~0.5 M params) and serves as a smoke-test
+> baseline.  For a competitive model increase `--conv-channels 192 --num-blocks 40`
+> and train on real game records.
+
 ### Update settings.json
 
 Edit `Akagi/settings/settings.json` and change the `"model"` field:
@@ -280,7 +315,7 @@ See `settings_3p_example.json` in this directory for a complete example.
 
 1. Install Python 3.10–3.12 and `pip install -r requirements.txt`.
 2. Follow the
-   [Akagi README](https://github.com/OIerty/Akagi/blob/main/README.md)
+   [Akagi README](https://github.com/shinkuan/Akagi/blob/v2/README.md)
    to install Akagi dependencies.
 3. Copy `mortal_3p.pth` → `Akagi\mjai_bot\mortal3p\mortal.pth`.
 4. Edit `Akagi\settings\settings.json` → `"model": "mortal3p"`.

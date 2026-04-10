@@ -98,16 +98,28 @@ def _tail_jsonl(src: Path, dst: Path, keep_lines: int):
 
 
 def _merge_jsonl(files: list[Path], dst: Path, keep_last: int | None = None):
-    """Concatenate JSONL files into dst, optionally keeping only the last N lines."""
-    with dst.open("w", encoding="utf-8") as out:
-        for src in files:
-            if src.exists():
-                with src.open("r", encoding="utf-8") as inp:
-                    shutil.copyfileobj(inp, out)
-    if keep_last is not None:
-        tmp = dst.with_suffix(".tmp")
-        _tail_jsonl(dst, tmp, keep_last)
-        tmp.replace(dst)
+    """Concatenate JSONL files into dst, optionally keeping only the last N lines.
+
+    Uses an intermediate temporary file so that if *dst* is also in *files*
+    (rolling-buffer pattern) it is not truncated before its contents are read.
+    """
+    tmp = dst.with_suffix(".merge_tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as out:
+            for src in files:
+                if src.exists():
+                    with src.open("r", encoding="utf-8") as inp:
+                        shutil.copyfileobj(inp, out)
+        if keep_last is not None:
+            tail_tmp = dst.with_suffix(".tail_tmp")
+            _tail_jsonl(tmp, tail_tmp, keep_last)
+            tail_tmp.replace(dst)
+            tmp.unlink(missing_ok=True)
+        else:
+            tmp.replace(dst)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 # ---------------------------------------------------------------------------
