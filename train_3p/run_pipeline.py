@@ -57,6 +57,7 @@ import logging
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -100,26 +101,41 @@ def _tail_jsonl(src: Path, dst: Path, keep_lines: int):
 def _merge_jsonl(files: list[Path], dst: Path, keep_last: int | None = None):
     """Concatenate JSONL files into dst, optionally keeping only the last N lines.
 
-    Uses an intermediate temporary file so that if *dst* is also in *files*
-    (rolling-buffer pattern) it is not truncated before its contents are read.
+    Uses unique temporary files (via :mod:`tempfile`) so that:
+    * concurrent runs targeting the same *dst* do not collide on fixed names, and
+    * if *dst* is also in *files* (rolling-buffer pattern) it is not truncated
+      before its contents are read.
+    Both temp files are removed in a ``finally`` block to avoid leaks on error.
     """
-    tmp = dst.with_suffix(".merge_tmp")
+    parent = dst.parent
+    merge_tmp_path: Path | None = None
+    tail_tmp_path: Path | None = None
     try:
-        with tmp.open("w", encoding="utf-8") as out:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=parent, suffix=".merge_tmp", delete=False
+        ) as merge_tmp:
+            merge_tmp_path = Path(merge_tmp.name)
             for src in files:
                 if src.exists():
                     with src.open("r", encoding="utf-8") as inp:
-                        shutil.copyfileobj(inp, out)
+                        shutil.copyfileobj(inp, merge_tmp)
+
         if keep_last is not None:
-            tail_tmp = dst.with_suffix(".tail_tmp")
-            _tail_jsonl(tmp, tail_tmp, keep_last)
-            tail_tmp.replace(dst)
-            tmp.unlink(missing_ok=True)
+            with tempfile.NamedTemporaryFile(
+                dir=parent, suffix=".tail_tmp", delete=False
+            ) as tail_tmp:
+                tail_tmp_path = Path(tail_tmp.name)
+            _tail_jsonl(merge_tmp_path, tail_tmp_path, keep_last)
+            tail_tmp_path.replace(dst)
+            tail_tmp_path = None  # replaced successfully; no cleanup needed
         else:
-            tmp.replace(dst)
-    except Exception:
-        tmp.unlink(missing_ok=True)
-        raise
+            merge_tmp_path.replace(dst)
+            merge_tmp_path = None  # replaced successfully; no cleanup needed
+    finally:
+        if merge_tmp_path is not None and merge_tmp_path.exists():
+            merge_tmp_path.unlink()
+        if tail_tmp_path is not None and tail_tmp_path.exists():
+            tail_tmp_path.unlink()
 
 
 # ---------------------------------------------------------------------------

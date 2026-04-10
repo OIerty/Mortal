@@ -192,7 +192,7 @@ python train.py \
 |-------------------|---------|------------|------------------------------|
 | `--conv-channels` | 64      | 192        | ResNet filter count          |
 | `--num-blocks`    | 6       | 40         | ResNet residual blocks       |
-| `--model-version` | 4       | 4          | Architecture version (1–4)   |
+| `--model-version` | 4       | 4          | Architecture version (2–4)   |
 | `--batch-size`    | 256     | 512        | Training batch size          |
 | `--lr`            | 1e-3    | 1e-4       | Peak learning rate           |
 | `--cql-weight`    | 0.0     | 5.0        | CQL regularisation (offline) |

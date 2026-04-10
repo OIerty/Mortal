@@ -634,8 +634,27 @@ def convert_mjai_log(
             t = evt.get("type", "")
             actor = evt.get("actor", -1)
 
-            # Apply state update; capture pre-action observation only when needed
-            # (inside each action branch) to avoid encoding on every event.
+            # riichi is a pending flag — record it and wait for the following dahai
+            if t == "riichi" and actor == player_id:
+                riichi_pending_local[actor] = True
+                state.apply_event(evt)
+                step_global += 1
+                continue
+
+            # Determine whether this event could produce a training example for this
+            # player so we can capture the pre-action observation BEFORE mutating state.
+            _is_player_action = (
+                (t == "dahai" and actor == player_id)
+                or (t == "agari")
+                or (t in ("pon", "chi", "daiminkan", "kakan", "ankan",
+                          "ryukyoku", "nukidora", "none")
+                    and actor == player_id)
+            )
+            # Snapshot pre-action state before apply_event mutates it.
+            pre_obs_candidate: np.ndarray | None = (
+                state.encode() if _is_player_action else None
+            )
+
             state.apply_event(evt)
             step_global += 1
 
@@ -643,29 +662,12 @@ def convert_mjai_log(
             mask: np.ndarray | None = None
             pre_obs: np.ndarray | None = None
 
-            if t == "riichi" and actor == player_id:
-                riichi_pending_local[actor] = True
-                continue  # wait for the following dahai
-
             if t == "dahai" and actor == player_id:
                 tid = tile_to_id(evt.get("pai", "?"))
                 if tid < 0:
                     riichi_pending_local.pop(actor, None)
                     continue
-                # Capture pre-action state (state.hand still has the tile because
-                # apply_event removes it; _hand_tile_ids re-adds it from the event).
-                # We need pre_obs BEFORE apply_event modified state — but apply_event
-                # was already called above.  The observation is captured by reconstructing
-                # the pre-action hand via _hand_tile_ids, and using state.encode() which
-                # now reflects post-discard hand.  To get a true pre-action encoding,
-                # we capture it just after apply_event but before further processing:
-                # Note: state has already applied the dahai (tile removed), so we cannot
-                # simply call encode().  We use a snapshot approach: the encoding is taken
-                # BEFORE the dahai is applied.  We achieve this by saving a copy of the
-                # state before apply_event.  However, for simplicity we accept the
-                # post-apply encoding because the hand count difference is ±1 tile.
-                # TODO: for exact pre-action obs, refactor apply_event to be lazy.
-                pre_obs = state.encode()
+                pre_obs = pre_obs_candidate
                 is_riichi = riichi_pending_local.pop(actor, False)
                 if is_riichi:
                     action_idx = ACTION_MAPPING.get(("riichi", tid))
@@ -683,13 +685,13 @@ def convert_mjai_log(
                     if isinstance(winners, int):
                         winners = [winners]
                     if player_id in winners:
-                        pre_obs = state.encode()
+                        pre_obs = pre_obs_candidate
                         action_idx = ACTION_MAPPING[("agari", None)]
                         mask = make_legal_actions_mask(can_agari=True)
                 elif actor == player_id:
                     action_idx = _event_to_action_index(evt, player_id)
                     if action_idx is not None:
-                        pre_obs = state.encode()
+                        pre_obs = pre_obs_candidate
                         mask = _call_event_mask(t, action_idx)
 
             if action_idx is None or pre_obs is None or mask is None:

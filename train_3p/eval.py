@@ -113,7 +113,7 @@ def offline_eval(
             for a, t5 in zip(actions, top5_pred)
         )
 
-        q_taken = q_out[torch.arange(len(actions)), actions]
+        q_taken = q_out[torch.arange(len(actions), device=actions.device), actions]
         total_mae += (q_taken - rewards).abs().sum().item()
         n_total += len(actions)
 

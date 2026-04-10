@@ -76,13 +76,13 @@ def policy_loss(q_out: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
 
 def value_loss(q_out: torch.Tensor, actions: torch.Tensor, rewards: torch.Tensor) -> torch.Tensor:
     """MSE between Q(s,a) for the taken action and the observed reward."""
-    q_taken = q_out[torch.arange(len(actions)), actions]
+    q_taken = q_out[torch.arange(len(actions), device=actions.device), actions]
     return nn.functional.mse_loss(q_taken, rewards)
 
 
 def cql_loss(q_out: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
     """Conservative Q-Learning penalty: log-sum-exp(Q) - Q(s,a)."""
-    q_taken = q_out[torch.arange(len(actions)), actions]
+    q_taken = q_out[torch.arange(len(actions), device=actions.device), actions]
     return q_out.logsumexp(dim=-1).mean() - q_taken.mean()
 
 
@@ -117,7 +117,7 @@ def evaluate(
         preds = q_out.argmax(dim=-1)
         correct += (preds == actions).sum().item()
         total += len(actions)
-        q_taken = q_out[torch.arange(len(actions)), actions]
+        q_taken = q_out[torch.arange(len(actions), device=actions.device), actions]
         val_err += (q_taken - rewards).abs().sum().item()
 
     mortal.train()
